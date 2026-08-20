@@ -274,6 +274,13 @@ class _FullscreenTranscriptControl(FormattedTextControl):
             self._selection_callback("start", x, y)
             return None
         if mouse_event.event_type is MouseEventType.MOUSE_MOVE and self._dragging:
+            # tmux cannot forward a release that happens outside its pane.  In
+            # all-motion mode, the first event after the pointer re-enters is a
+            # no-button move; treat that as the missing release instead of
+            # leaving the drag lease and edge autoscroll stranded.
+            if mouse_event.button is MouseButton.NONE:
+                self._finish_drag(x, y, moved=True)
+                return None
             self._drag_moved = True
             self._drag_position = (x, y)
             direction = 0
@@ -295,10 +302,7 @@ class _FullscreenTranscriptControl(FormattedTextControl):
             self._selection_callback("extend", x, y)
             return None
         if mouse_event.event_type is MouseEventType.MOUSE_UP and self._dragging:
-            moved = self._drag_moved
-            self._dragging = False
-            self._set_autoscroll(0)
-            self._selection_callback("finish" if moved else "cancel", x, y)
+            self._finish_drag(x, y, moved=self._drag_moved)
             return None
         return super().mouse_handler(mouse_event)
 
@@ -328,13 +332,22 @@ class _FullscreenTranscriptControl(FormattedTextControl):
         self._drag_moved = True
         self._drag_position = (x, y)
         if mouse_event.event_type is MouseEventType.MOUSE_MOVE:
-            self._set_autoscroll(1 if below else -1)
-            self._selection_callback("extend", x, y)
+            if mouse_event.button is MouseButton.NONE:
+                self._finish_drag(x, y, moved=True)
+            else:
+                self._set_autoscroll(1 if below else -1)
+                self._selection_callback("extend", x, y)
         else:
-            self._dragging = False
-            self._set_autoscroll(0)
-            self._selection_callback("finish", x, y)
+            self._finish_drag(x, y, moved=True)
         return True
+
+    def _finish_drag(self, x: int, y: int, *, moved: bool) -> None:
+        """Resolve an owned drag at the latest observable pointer position."""
+        self._dragging = False
+        self._drag_moved = False
+        self._drag_position = (x, y)
+        self._set_autoscroll(0)
+        self._selection_callback("finish" if moved else "cancel", x, y)
 
     def cancel_drag(self) -> None:
         """Cancel an active drag and any stationary edge autoscroll."""

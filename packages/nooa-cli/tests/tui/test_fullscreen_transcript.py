@@ -1319,6 +1319,45 @@ async def test_fullscreen_mouse_drag_selects_autoscrolls_and_copies(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_fullscreen_drag_recovers_release_outside_tmux_on_reentry(monkeypatch) -> None:
+    """A no-button motion closes the drag whose release tmux could not report."""
+    from nooa_cli.tui.tui_application import _ClipboardResult
+    from prompt_toolkit.mouse_events import MouseButton, MouseEventType
+
+    app = _make_fullscreen_app()
+    app.emit_block("zero\none\ntwo")
+    app._transcript_viewport_size = lambda: (8, 3)
+    copied = []
+
+    async def copy_locally(text: str) -> _ClipboardResult:
+        copied.append(text)
+        return _ClipboardResult(True, "test")
+
+    monkeypatch.setattr(app, "_copy_to_local_clipboard_async", copy_locally)
+    assert app._output_window is not None
+    transcript = app._output_window.content
+    transcript.create_content(8, 3)
+
+    transcript.mouse_handler(_mouse_event(MouseEventType.MOUSE_DOWN, x=0, y=0))
+    transcript.mouse_handler(_mouse_event(MouseEventType.MOUSE_MOVE, x=2, y=1))
+    assert transcript.dragging
+    assert app._fullscreen_transcript.selected_text() == "one\ntwo"
+
+    # No MOUSE_UP arrives while the pointer is outside the tmux pane.  With
+    # all-motion reporting, re-entry after release is the first no-button move.
+    transcript.mouse_handler(
+        _mouse_event(MouseEventType.MOUSE_MOVE, x=4, y=1, button=MouseButton.NONE)
+    )
+    assert not transcript.dragging
+    assert app._fullscreen_transcript.selected_text() == ""
+    if app._clipboard_task is not None:
+        await app._clipboard_task
+
+    assert copied == ["one\ntwo"]
+    assert app._transient_status_text == "Copied 7 characters"
+
+
+@pytest.mark.asyncio
 async def test_fullscreen_drag_release_over_status_finishes_and_copies(monkeypatch) -> None:
     from nooa_cli.tui.tui_application import _ClipboardResult
     from prompt_toolkit.mouse_events import MouseEventType
@@ -1352,6 +1391,44 @@ async def test_fullscreen_drag_release_over_status_finishes_and_copies(monkeypat
     assert not transcript.dragging
     assert copied == ["one\ntwo\n"]
     assert app._transient_status_text == "Copied 8 characters"
+
+
+@pytest.mark.asyncio
+async def test_fullscreen_drag_recovers_outside_release_reentering_over_status(
+    monkeypatch,
+) -> None:
+    from nooa_cli.tui.tui_application import _ClipboardResult
+    from prompt_toolkit.mouse_events import MouseButton, MouseEventType
+
+    app = _make_fullscreen_app()
+    app.emit_block("zero\none\ntwo")
+    app._transcript_viewport_size = lambda: (8, 3)
+    copied = []
+
+    async def copy_locally(text: str) -> _ClipboardResult:
+        copied.append(text)
+        return _ClipboardResult(True, "test")
+
+    monkeypatch.setattr(app, "_copy_to_local_clipboard_async", copy_locally)
+    assert app._output_window is not None
+    transcript = app._output_window.content
+    transcript.create_content(8, 3)
+
+    transcript.mouse_handler(_mouse_event(MouseEventType.MOUSE_DOWN, x=0, y=0))
+    transcript.mouse_handler(_mouse_event(MouseEventType.MOUSE_MOVE, x=2, y=1))
+    assert transcript.dragging
+
+    result = app._status_control.mouse_handler(
+        _mouse_event(MouseEventType.MOUSE_MOVE, x=4, y=0, button=MouseButton.NONE)
+    )
+    assert result is None
+    assert not transcript.dragging
+    if app._clipboard_task is not None:
+        await app._clipboard_task
+
+    # Bottom chrome is clamped to the final transcript row.
+    assert copied == ["one\ntwo\n"]
+    assert app._fullscreen_transcript.selected_text() == ""
 
 
 @pytest.mark.asyncio
