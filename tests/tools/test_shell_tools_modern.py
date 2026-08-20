@@ -91,6 +91,82 @@ def _grep_anchor_lines(repo: Path, cmd: str) -> set[tuple[str, int]]:
 
 
 # --------------------------------------------------------------------------
+# Read-only sed ranges
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "cmd,start,end,expected",
+    [
+        ("sed -n '2,3p' a.py", 2, 3, '    return "bar"\n# foo again\n'),
+        ('sed -n "2p" a.py', 2, 2, '    return "bar"\n'),
+        ("sed -n -e '3,99p' a.py", 3, 4, "# foo again\nfooo = 1\n"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sed_numeric_range_attaches_editable_match(
+    repo: Path, cmd: str, start: int, end: int, expected: str
+):
+    sh = ShellTools(cwd=str(repo))
+    result = await sh.run(cmd)
+
+    assert result.matches is not None and len(result.matches) == 1
+    match = result.matches[0]
+    assert (match.path, match.start, match.end, match.text) == ("a.py", start, end, expected)
+    assert match.text.strip() == result.stdout
+
+
+@pytest.mark.asyncio
+async def test_sed_range_after_cd_prefix_attaches_match(repo: Path):
+    sh = ShellTools(cwd=str(repo))
+    result = await sh.run("cd sub && sed -n '1,2p' c.py")
+
+    assert result.matches is not None and len(result.matches) == 1
+    match = result.matches[0]
+    assert (match.path, match.start, match.end, match.text) == ("c.py", 1, 2, "x = 1\nfoo = 2\n")
+
+
+@pytest.mark.asyncio
+async def test_sed_range_match_is_editable(repo: Path):
+    sh = ShellTools(cwd=str(repo))
+    result = await sh.run("sed -n '2,3p' a.py")
+    assert result.matches
+
+    await sh.replace(result.matches[0], "    return 42\n")
+
+    assert (repo / "a.py").read_text() == "def foo():\n    return 42\nfooo = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_sed_range_past_eof_attaches_empty_match_list(repo: Path):
+    sh = ShellTools(cwd=str(repo))
+    result = await sh.run("sed -n '99,100p' a.py")
+
+    assert result.stdout == ""
+    assert result.matches == []
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "sed -n 's/foo/bar/p' a.py",  # transformation
+        "sed -n '/foo/p' a.py",  # regex address
+        "sed -n '1p;2p' a.py",  # multiple expressions
+        "sed -n -e '1p' -e '2p' a.py",  # multiple -e expressions
+        "sed -n '1,2p' a.py b.txt",  # multiple files
+        "sed -n '1,2p'",  # stdin
+        "sed -n '1,2p' a.py | cat",  # pipe
+        "sed -i -n '1,2p' a.py",  # mutation
+        "sed -n '3,2p' a.py",  # reversed range
+    ],
+)
+@pytest.mark.asyncio
+async def test_nontrivial_sed_does_not_attach_matches(repo: Path, cmd: str):
+    sh = ShellTools(cwd=str(repo))
+    result = await sh.run(cmd)
+
+    assert result.matches is None
+
+
+# --------------------------------------------------------------------------
 # Differential oracle on real searches
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize(
